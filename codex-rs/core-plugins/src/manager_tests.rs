@@ -4722,6 +4722,83 @@ plugins = true
 }
 
 #[tokio::test]
+async fn read_uninstalled_remote_plugin_uses_catalog_preview_without_cloning() {
+    for (long_description, expected_description) in [
+        (
+            "Review local changes before publishing",
+            "Review local changes before publishing",
+        ),
+        ("", "Review code"),
+        ("   ", "Review code"),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_root = tmp.path().join("repo");
+        let missing_remote_repo = tmp.path().join("missing-remote-plugin-repo");
+        let missing_remote_repo_url = url::Url::from_directory_path(&missing_remote_repo)
+            .unwrap()
+            .to_string();
+        fs::create_dir_all(repo_root.join(".git")).unwrap();
+        let marketplace_path = repo_root.join(".agents/plugins/marketplace.json");
+        write_file(
+            &marketplace_path,
+            &serde_json::json!({
+                "name": "debug",
+                "plugins": [{
+                    "name": "toolkit",
+                    "source": {
+                        "source": "git-subdir",
+                        "url": missing_remote_repo_url,
+                        "path": "plugins/toolkit"
+                    },
+                    "interface": {
+                        "shortDescription": "Review code",
+                        "longDescription": long_description
+                    },
+                    "marketplaceAssets": {"logo": "./assets/logo.png"}
+                }]
+            })
+            .to_string(),
+        );
+        write_file(&repo_root.join("assets/logo.png"), "preview");
+        write_file(
+            &tmp.path().join(CONFIG_TOML_FILE),
+            "[features]\nplugins = true\n",
+        );
+        let config = load_config(tmp.path(), &repo_root).await;
+        let outcome = test_plugins_manager(tmp.path().to_path_buf())
+            .read_plugin_for_config(
+                &config,
+                &PluginReadRequest {
+                    plugin_name: "toolkit".to_string(),
+                    marketplace_path: AbsolutePathBuf::try_from(marketplace_path).unwrap(),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            outcome.plugin.description.as_deref(),
+            Some(expected_description)
+        );
+        assert_eq!(
+            outcome.plugin.interface.unwrap().logo,
+            Some(AbsolutePathBuf::try_from(repo_root.join("assets/logo.png")).unwrap())
+        );
+        assert!(!outcome.plugin.installed);
+        assert!(outcome.plugin.skills.is_empty());
+        assert_eq!(
+            outcome.plugin.details_unavailable_reason,
+            Some(PluginDetailsUnavailableReason::InstallRequiredForRemoteSource)
+        );
+        assert!(
+            !tmp.path()
+                .join("plugins/.marketplace-plugin-source-staging")
+                .exists()
+        );
+    }
+}
+
+#[tokio::test]
 async fn read_plugin_for_config_installed_git_source_reads_from_cache_without_cloning() {
     let tmp = tempfile::tempdir().unwrap();
     let repo_root = tmp.path().join("repo");
@@ -4743,7 +4820,13 @@ async fn read_plugin_for_config_installed_git_source_reads_from_cache_without_cl
         "url": "{missing_remote_repo_url}",
         "path": "plugins/toolkit"
       }},
-      "category": "Developer Tools"
+      "category": "Developer Tools",
+      "interface": {{
+        "longDescription": "Marketplace description"
+      }},
+      "marketplaceAssets": {{
+        "logo": "./assets/marketplace-logo.png"
+      }}
     }}
   ]
 }}"#
@@ -4756,7 +4839,8 @@ async fn read_plugin_for_config_installed_git_source_reads_from_cache_without_cl
   "name": "toolkit",
   "description": "Cached toolkit plugin",
   "interface": {
-    "displayName": "Toolkit"
+    "displayName": "Toolkit",
+    "logo": "./assets/installed-logo.png"
   }
 }"#,
     );
@@ -4856,6 +4940,10 @@ enabled = false
         Some(PluginManifestInterface {
             display_name: Some("Toolkit".to_string()),
             category: Some("Developer Tools".to_string()),
+            logo: Some(
+                AbsolutePathBuf::try_from(cached_plugin_root.join("assets/installed-logo.png"))
+                    .unwrap()
+            ),
             ..Default::default()
         })
     );

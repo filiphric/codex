@@ -538,6 +538,7 @@ fn resolve_marketplace_plugin_entry(
         source,
         policy,
         category,
+        marketplace_assets,
         manifest_fields,
     } = plugin;
     let Some(source) = resolve_supported_plugin_source(marketplace_path, &name, source) else {
@@ -565,12 +566,36 @@ fn resolve_marketplace_plugin_entry(
         }
         MarketplacePluginSource::Git { .. } | MarketplacePluginSource::Npm { .. } => None,
     };
-    let interface = plugin_interface_with_marketplace_category(
+    let mut interface = plugin_interface_with_marketplace_category(
         manifest
             .as_ref()
             .and_then(|manifest| manifest.interface.clone()),
         category,
     );
+    if source.is_install_materialized()
+        && let Some(assets) = marketplace_assets
+    {
+        // These assets belong to the catalog, not the remote plugin's install root.
+        // Keep them out of manifest_fallback so installation still uses the source package.
+        let marketplace_root = marketplace_root_dir(marketplace_path)?;
+        let contents = serde_json::json!({
+            "name": name,
+            "interface": assets,
+        })
+        .to_string();
+        if let Ok(preview) = crate::manifest::parse_plugin_manifest(
+            marketplace_root.as_path(),
+            &fallback_plugin_manifest_path(marketplace_root.as_path()),
+            &contents,
+        ) && let Some(assets) = preview.interface
+        {
+            let interface = interface.get_or_insert_with(PluginManifestInterface::default);
+            interface.composer_icon = assets.composer_icon;
+            interface.logo = assets.logo;
+            interface.logo_dark = assets.logo_dark;
+            interface.screenshots = assets.screenshots;
+        }
+    }
 
     Ok(Some(ResolvedMarketplacePlugin {
         plugin_id: PluginId::new(name, marketplace_name.to_string()).map_err(|err| match err {
@@ -1018,8 +1043,23 @@ struct RawMarketplaceManifestPlugin {
     #[serde(default)]
     category: Option<String>,
     #[serde(default)]
+    marketplace_assets: Option<RawMarketplacePluginAssets>,
+    #[serde(default)]
     #[serde(flatten)]
     manifest_fields: JsonMap<String, JsonValue>,
+}
+
+#[derive(Debug, Default, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RawMarketplacePluginAssets {
+    #[serde(default)]
+    composer_icon: Option<String>,
+    #[serde(default)]
+    logo: Option<String>,
+    #[serde(default)]
+    logo_dark: Option<String>,
+    #[serde(default)]
+    screenshots: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]

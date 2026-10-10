@@ -2640,7 +2640,23 @@ impl PluginsManager {
             })?;
         let plugin_key = plugin_id.as_key();
         if plugin.source.is_install_materialized() && !plugin.installed {
-            let description = remote_plugin_install_required_description(&plugin.source);
+            let description = plugin
+                .interface
+                .as_ref()
+                .and_then(|interface| {
+                    interface
+                        .long_description
+                        .as_ref()
+                        .filter(|description| !description.trim().is_empty())
+                        .or_else(|| {
+                            interface
+                                .short_description
+                                .as_ref()
+                                .filter(|description| !description.trim().is_empty())
+                        })
+                })
+                .cloned()
+                .unwrap_or_else(|| remote_plugin_install_required_description(&plugin.source));
             return Ok(PluginDetail {
                 id: plugin_key,
                 name: plugin.name,

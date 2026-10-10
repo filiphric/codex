@@ -271,6 +271,113 @@ fn find_marketplace_plugin_omits_interface_asset_paths_for_git_sources() {
 }
 
 #[test]
+fn remote_marketplace_assets_resolve_from_catalog_without_changing_install_metadata() {
+    for source in [
+        serde_json::json!({"source": "url", "url": "https://example.com/plugin.git"}),
+        serde_json::json!({
+            "source": "git-subdir",
+            "url": "https://example.com/plugin.git",
+            "path": "plugins/toolkit"
+        }),
+        serde_json::json!({"source": "npm", "package": "@example/toolkit"}),
+    ] {
+        let tmp = tempdir().unwrap();
+        let repo_root = tmp.path().join("repo");
+        fs::create_dir_all(repo_root.join(".git")).unwrap();
+        fs::create_dir_all(repo_root.join(".agents/plugins")).unwrap();
+        fs::create_dir_all(repo_root.join("assets")).unwrap();
+        fs::write(repo_root.join("assets/logo.png"), b"preview").unwrap();
+        let marketplace_path =
+            AbsolutePathBuf::try_from(repo_root.join(".agents/plugins/marketplace.json")).unwrap();
+        fs::write(
+            &marketplace_path,
+            serde_json::json!({
+                "name": "debug",
+                "plugins": [{
+                    "name": "toolkit",
+                    "source": source,
+                    "interface": {
+                        "shortDescription": "Review code",
+                        "logo": "./remote-logo.png"
+                    },
+                    "marketplaceAssets": {
+                        "logo": "./assets/logo.png",
+                        "composerIcon": "./assets/logo.png",
+                        "logoDark": "./assets/logo.png",
+                        "screenshots": ["./assets/logo.png"]
+                    }
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let resolved = find_marketplace_plugin(&marketplace_path, "toolkit").unwrap();
+        assert!(resolved.source.is_install_materialized());
+        let expected_source =
+            resolve_plugin_source(&marketplace_path, serde_json::from_value(source).unwrap())
+                .unwrap();
+        assert_eq!(resolved.source, expected_source);
+        let interface = resolved.interface.unwrap();
+        let logo = AbsolutePathBuf::try_from(repo_root.join("assets/logo.png")).unwrap();
+        assert_eq!(interface.logo, Some(logo.clone()));
+        assert_eq!(interface.composer_icon, Some(logo.clone()));
+        assert_eq!(interface.logo_dark, Some(logo.clone()));
+        assert_eq!(interface.screenshots, vec![logo]);
+        assert_eq!(interface.short_description.as_deref(), Some("Review code"));
+
+        let installed_root = tmp.path().join("installed");
+        let fallback = resolved
+            .manifest_fallback
+            .parse_for_plugin_root(&installed_root)
+            .unwrap();
+        assert_eq!(
+            fallback.interface.unwrap().logo,
+            Some(AbsolutePathBuf::try_from(installed_root.join("remote-logo.png")).unwrap())
+        );
+        assert!(
+            !resolved
+                .manifest_fallback
+                .contents()
+                .contains("marketplaceAssets")
+        );
+    }
+}
+
+#[test]
+fn remote_marketplace_assets_reject_paths_outside_catalog() {
+    for logo in [
+        "../logo.png",
+        "./../logo.png",
+        "/tmp/logo.png",
+        "./",
+        "assets/logo.png",
+        "https://example.com/logo.png",
+    ] {
+        let tmp = tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join(".git")).unwrap();
+        fs::create_dir_all(tmp.path().join(".claude-plugin")).unwrap();
+        let marketplace_path = write_alternate_marketplace(
+            tmp.path(),
+            &serde_json::json!({
+                "name": "debug",
+                "plugins": [{
+                    "name": "toolkit",
+                    "source": {"source": "url", "url": "https://example.com/plugin.git"},
+                    "interface": {"shortDescription": "Review code"},
+                    "marketplaceAssets": {"logo": logo}
+                }]
+            })
+            .to_string(),
+        );
+        let resolved = find_marketplace_plugin(&marketplace_path, "toolkit").unwrap();
+        let interface = resolved.interface.unwrap();
+        assert_eq!(interface.logo, None, "unexpected asset path: {logo}");
+        assert_eq!(interface.short_description.as_deref(), Some("Review code"));
+    }
+}
+
+#[test]
 fn find_marketplace_plugin_supports_npm_sources() {
     let tmp = tempdir().unwrap();
     let repo_root = tmp.path().join("repo");
